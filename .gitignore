@@ -1,0 +1,28 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!example.tfvars
+crash.log
+
+# Secrets
+.env
+*.env
+*.pem
+*.csv.key
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Airflow / data
+logs/
+data/
+*.parquet
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
