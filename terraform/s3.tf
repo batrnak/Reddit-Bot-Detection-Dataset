@@ -46,15 +46,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "datalake" {
   bucket = aws_s3_bucket.datalake.id
 
   rule {
-    id     = "cleanup"
+    id     = "bronze-archive"
     status = "Enabled"
-    filter {}
-
-    noncurrent_version_expiration {
-      noncurrent_days = 30
-    }
-    abort_incomplete_multipart_upload {
-      days_after_initiation = 7
+    filter { prefix = "bronze/" }
+    transition {
+      days          = 90
+      storage_class = "GLACIER"
     }
   }
 }
