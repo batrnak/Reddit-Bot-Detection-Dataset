@@ -1,0 +1,12 @@
+# requirements.txt
+polars==0.20.x
+pyarrow==15.x
+torch==2.x
+torch-geometric==2.x
+xgboost==2.x
+scikit-learn==1.x
+snorkel==0.9.x  # hoặc tự viết label model
+transformers==4.x  # cho RoBERTa
+duckdb==0.10.x
+requests==2.x
+boto3
