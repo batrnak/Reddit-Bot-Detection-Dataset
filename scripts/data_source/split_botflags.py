@@ -1,9 +1,11 @@
 # scripts/ingest/split_botflag.py
 """
-Tách 3 sub bot flag ra khỏi 15 sub normal.
-Pipeline: bytes pre-filter | json.loads check TOP-LEVEL subreddit | ghi 2 file.
+Tách dữ liệu thành:
+  - posts:    {kind}_{month}_botflag.jsonl  +  {kind}_{month}_normal.jsonl
+  - comments: chỉ giữ {kind}_{month}_normal.jsonl (bỏ botflag)
 
-Không dùng substring để quyết định label (tránh crosspost_parent_list match nhầm).
+Lý do: comment trong 3 sub bot-flag là comment của người nói về bot,
+không phải comment của bot → vô dụng cho label.
 """
 
 import json
@@ -12,101 +14,136 @@ from pathlib import Path
 LABEL_SUBS = ["BotBouncer", "TheseFuckingAccounts", "RedditBotHunters"]
 LABEL_LOWER = {s.lower() for s in LABEL_SUBS}
 
-# Pre-filter bytes — chỉ để skip nhanh, KHÔNG dùng để quyết định label
 NEEDLES = []
 for s in LABEL_SUBS:
     NEEDLES.append(f'"subreddit":"{s}"'.encode("utf-8").lower())
     NEEDLES.append(f'"subreddit": "{s}"'.encode("utf-8").lower())
 
 FILTERED_DIR = Path("C:/arctic_filtered")
+SPLIT_DIR    = FILTERED_DIR / "split"
 
 
-def split_file(src: Path, dst_bot: Path, dst_normal: Path):
-    # Skip nếu output còn mới hơn src (không stale)
-    if dst_bot.exists() and dst_normal.exists():
-        if src.stat().st_mtime <= dst_bot.stat().st_mtime:
-            print(f"  ✅ {src.name} đã tách & mới hơn → skip.")
-            return
-        print(f"  → {src.name} mới hơn output cũ → tách lại.")
-        dst_bot.unlink()
-        dst_normal.unlink()
+def _should_skip(src: Path, *dsts: Path) -> bool:
+    """Skip nếu tất cả dst tồn tại và mới hơn src."""
+    if not all(d.exists() for d in dsts):
+        return False
+    if src.stat().st_mtime <= max(d.stat().st_mtime for d in dsts):
+        return True
+    return False
 
-    tmp_bot = dst_bot.with_suffix(".tmp")
+
+def split_posts(src: Path, dst_bot: Path, dst_normal: Path):
+    """Tách posts thành 2 file bot/normal (check top-level subreddit)."""
+    if _should_skip(src, dst_bot, dst_normal):
+        print(f"  ✅ {src.name} đã tách & mới hơn → skip.")
+        return
+    for d in (dst_bot, dst_normal):
+        d.unlink(missing_ok=True)
+
+    tmp_bot    = dst_bot.with_suffix(".tmp")
     tmp_normal = dst_normal.with_suffix(".tmp")
     tmp_bot.unlink(missing_ok=True)
     tmp_normal.unlink(missing_ok=True)
 
-    print(f"  → Đang tách {src.name} ({src.stat().st_size/1024/1024:.0f} MB)...")
+    print(f"  → Tách {src.name} ({src.stat().st_size/1024/1024:.0f} MB)...")
 
-    n_bot = n_normal = 0
-    prefilter_hits = parse_err = 0
-    no_sub_field = 0
+    n_bot = n_normal = prefilter_hits = parse_err = no_sub = 0
 
     with open(src, "rb") as fin, \
          open(tmp_bot, "wb") as fbot, \
          open(tmp_normal, "wb") as fnormal:
         for line in fin:
-            # Pre-filter: bỏ dòng không chứa needle nào → giảm json.loads 99%
             lower = line.lower()
             if not any(n in lower for n in NEEDLES):
-                fnormal.write(line)
-                n_normal += 1
+                fnormal.write(line); n_normal += 1
                 continue
-
             prefilter_hits += 1
-
-            # Có needle → parse JSON để check top-level subreddit
             try:
                 obj = json.loads(line)
             except (json.JSONDecodeError, UnicodeDecodeError):
                 parse_err += 1
-                # Không parse được → cho vào normal (an toàn cho label)
-                fnormal.write(line)
-                n_normal += 1
+                fnormal.write(line); n_normal += 1
                 continue
-
             if not isinstance(obj, dict):
-                fnormal.write(line)
-                n_normal += 1
+                fnormal.write(line); n_normal += 1
                 continue
-
             sub = obj.get("subreddit")
             if not isinstance(sub, str):
-                no_sub_field += 1
-                fnormal.write(line)
-                n_normal += 1
+                no_sub += 1
+                fnormal.write(line); n_normal += 1
                 continue
-
-            # QUYẾT ĐỊNH LABEL dựa vào TOP-LEVEL subreddit
             if sub.lower() in LABEL_LOWER:
-                fbot.write(line)
-                n_bot += 1
+                fbot.write(line); n_bot += 1
             else:
-                # Có needle ở đâu đó (crosspost, body, title) nhưng
-                # top-level không phải label sub → normal
-                fnormal.write(line)
-                n_normal += 1
+                fnormal.write(line); n_normal += 1
 
-    # Atomic replace
     tmp_bot.replace(dst_bot)
     tmp_normal.replace(dst_normal)
+    print(f"    ✅ bot={n_bot:,}, normal={n_normal:,}, tổng={n_bot+n_normal:,}")
+    print(f"       pre-filter hits={prefilter_hits:,}, parse_err={parse_err:,}, no_sub={no_sub:,}")
 
-    total = n_bot + n_normal
-    print(f"    ✅ bot={n_bot:,}, normal={n_normal:,}, tổng={total:,}")
-    print(f"       pre-filter hits={prefilter_hits:,}, parse_err={parse_err:,}, no_sub={no_sub_field:,}")
+
+def split_comments_normal(src: Path, dst_normal: Path):
+    """Comments: chỉ giữ sub normal, bỏ 3 sub bot (không tạo file botflag)."""
+    if _should_skip(src, dst_normal):
+        print(f"  ✅ {src.name} đã xử lý & mới hơn → skip.")
+        return
+    dst_normal.unlink(missing_ok=True)
+
+    tmp = dst_normal.with_suffix(".tmp")
+    tmp.unlink(missing_ok=True)
+
+    print(f"  → Lọc {src.name} (bỏ 3 sub bot, {src.stat().st_size/1024/1024:.0f} MB)...")
+
+    n_normal = n_dropped_bot = parse_err = 0
+
+    with open(src, "rb") as fin, open(tmp, "wb") as fout:
+        for line in fin:
+            lower = line.lower()
+            if not any(n in lower for n in NEEDLES):
+                fout.write(line); n_normal += 1
+                continue
+            try:
+                obj = json.loads(line)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                parse_err += 1
+                fout.write(line); n_normal += 1
+                continue
+            sub = obj.get("subreddit", "") if isinstance(obj, dict) else ""
+            if isinstance(sub, str) and sub.lower() in LABEL_LOWER:
+                n_dropped_bot += 1
+            else:
+                fout.write(line); n_normal += 1
+
+    tmp.replace(dst_normal)
+    print(f"    ✅ normal={n_normal:,}, dropped(bot)={n_dropped_bot:,}, parse_err={parse_err:,}")
 
 
 if __name__ == "__main__":
+    SPLIT_DIR.mkdir(parents=True, exist_ok=True)
+
     for month in ["2026-06", "2026-07", "2026-08"]:
-        for kind in ["posts", "comments"]:
-            src = FILTERED_DIR / f"{kind}_{month}.jsonl"
-            if not src.exists():
-                print(f"  ⏭️  {src.name} chưa có.")
-                continue
+        print(f"\n===== {month} =====")
 
-            dst_bot    = FILTERED_DIR / f"split" / f"{kind}_{month}_botflag.jsonl"
-            dst_normal = FILTERED_DIR / f"split" / f"{kind}_{month}_normal.jsonl"
+        # Posts: tách bot + normal
+        src_p = FILTERED_DIR / f"posts_{month}.jsonl"
+        if src_p.exists():
+            split_posts(
+                src_p,
+                SPLIT_DIR / f"posts_{month}_botflag.jsonl",
+                SPLIT_DIR / f"posts_{month}_normal.jsonl",
+            )
+        else:
+            print(f"  ⏭️  {src_p.name} chưa có.")
 
-            split_file(src, dst_bot, dst_normal)
+        # Comments: chỉ ra normal
+        src_c = FILTERED_DIR / f"comments_{month}.jsonl"
+        if src_c.exists():
+            split_comments_normal(
+                src_c,
+                SPLIT_DIR / f"comments_{month}_normal.jsonl",
+            )
+        else:
+            print(f"  ⏭️  {src_c.name} chưa có.")
 
     print("\n✅ Xong.")
