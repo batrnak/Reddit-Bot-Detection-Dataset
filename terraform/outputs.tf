@@ -16,3 +16,15 @@ output "iam_secret_access_key" {
   value     = aws_iam_access_key.airflow_local.secret
   sensitive = true
 }
+
+output "glue_database_silver" {
+  value = aws_glue_catalog_database.silver_arctic_shift.name
+}
+
+output "glue_tables_silver" {
+  value = [
+    aws_glue_catalog_table.silver_posts.name,
+    aws_glue_catalog_table.silver_comments.name,
+    aws_glue_catalog_table.silver_bot_users.name,
+  ]
+}
