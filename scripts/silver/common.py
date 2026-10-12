@@ -1,12 +1,10 @@
-# scripts/silver/common.py
-"""Helper dùng chung cho 3 script silver."""
-
 import json
 from datetime import datetime, timezone
 from io import BytesIO
 
 import boto3
-import pandas as pd
+import pandas as pd 
+# pyrefly: ignore [missing-import]
 import pyarrow as pa
 from botocore.exceptions import ClientError
 
@@ -111,24 +109,39 @@ def schema_of(df: pd.DataFrame) -> list:
 
 
 # ================== WRITE METADATA ==================
-def write_metadata(kind: str, dfs: dict):
-    """Ghi metadata/manifest.json. Raise nếu dfs rỗng."""
-    if not dfs:
-        raise RuntimeError(f"{kind}: không có dữ liệu để ghi metadata (dfs rỗng).")
+def write_metadata(kind: str, stats: dict):
+    """
+    Ghi metadata/manifest.json.
+
+    stats: {month: DataFrame | {"rows": int, "schema": list}}
+      - DataFrame  : kiểu cũ (giữ đến khi chuyển hết sang stats)
+      - dict       : kiểu mới (nhẹ RAM)
+    """
+    if not stats:
+        raise RuntimeError(f"{kind}: không có dữ liệu để ghi metadata (stats rỗng).")
+
+    # Chuẩn hoá về {"rows": ..., "schema": ...}
+    norm = {}
+    for m, s in stats.items():
+        if isinstance(s, pd.DataFrame):
+            norm[m] = {"rows": len(s), "schema": schema_of(s)}
+        else:
+            norm[m] = s
+    stats = norm
 
     manifest = {
         "kind":         kind,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "months":       sorted(dfs.keys()),
-        "total_rows":   sum(len(df) for df in dfs.values()),
+        "months":       sorted(stats.keys()),
+        "total_rows":   sum(s["rows"] for s in stats.values()),
         "files": [
             {
                 "month":  m,
                 "key":    f"{SILVER_PREFIX}/{kind}/data/{kind}_{m}.parquet",
-                "rows":   len(df),
-                "schema": schema_of(df),
+                "rows":   s["rows"],
+                "schema": s["schema"],
             }
-            for m, df in sorted(dfs.items())
+            for m, s in sorted(stats.items())
         ],
     }
     key = f"{SILVER_PREFIX}/{kind}/metadata/manifest.json"
@@ -137,7 +150,6 @@ def write_metadata(kind: str, dfs: dict):
         Body=json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8"),
     )
     print(f"    📄 s3://{BUCKET}/{key}")
-
 # scripts/silver/common.py
 # ... (giữ nguyên phần trên)
 
@@ -189,13 +201,54 @@ def discover_bronze_months() -> list[str]:
     return sorted(valid)
 
 
-def silver_already_built(kind: str, month: str) -> bool:
-    """Kiểm tra silver/<kind>/data/<kind>_<month>.parquet đã tồn tại chưa."""
-    key = f"{SILVER_PREFIX}/{kind}/data/{kind}_{month}.parquet"
+SILVER_SOURCES = {
+    "posts":     [("posts", "normal")],
+    "comments":  [("comments", "normal")],
+    "bot_users": [("posts", "botflag")],
+}
+
+
+from botocore.exceptions import BotoCoreError, ClientError
+
+def _head(key):
     try:
-        s3.head_object(Bucket=BUCKET, Key=key)
-        return True
+        return s3.head_object(Bucket=BUCKET, Key=key)
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
-            return False
+            return None
         raise
+    except BotoCoreError as e:
+        raise BronzeReadError(f"S3 head fail: {key}: {e}") from e
+
+
+def needs_build(kind: str, ym: str) -> bool:
+    """True nếu silver chưa có, hoặc bất kỳ nguồn bronze nào mới hơn silver."""
+    silver = _head(f"{SILVER_PREFIX}/{kind}/data/{kind}_{ym}.parquet")
+    if silver is None:
+        return True
+    y, m = ym.split("-")
+    for src_kind, label in SILVER_SOURCES[kind]:
+        b = _head(f"{BRONZE_PREFIX}/{src_kind}/year={y}/month={m}/{label}.jsonl")
+        if b is not None and b["LastModified"] > silver["LastModified"]:
+            return True
+    return False
+
+
+def months_needing_build(kind: str) -> list[str]:
+    return [ym for ym in discover_bronze_months() if needs_build(kind, ym)]
+
+
+def to_int(v, default=0):
+    try:
+        return int(v or 0)
+    except (ValueError, TypeError):
+        return default
+
+
+def to_float(v, default=None):
+    if v is None:
+        return default
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return default
