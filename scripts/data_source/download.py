@@ -35,7 +35,7 @@ TARGET_SUBS = {
     "InternationalNews", "GlobalTalk", "UpliftingNews",
     "europe", "northkorea", "LessCredibleDefence",
     "Israel", "Palestine",
-    "BotBouncer", "TheseFuckingAccounts", "RedditBotHunters",
+    "BotBouncer", 
 }
 TARGET_SUBS_LOWER = {s.lower() for s in TARGET_SUBS}
 

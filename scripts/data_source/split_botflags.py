@@ -11,7 +11,7 @@ không phải comment của bot → vô dụng cho label.
 import json
 from pathlib import Path
 
-LABEL_SUBS = ["BotBouncer", "TheseFuckingAccounts", "RedditBotHunters"]
+LABEL_SUBS = ["BotBouncer"]
 LABEL_LOWER = {s.lower() for s in LABEL_SUBS}
 
 NEEDLES = []
