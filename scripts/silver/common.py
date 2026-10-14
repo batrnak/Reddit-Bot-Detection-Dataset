@@ -7,7 +7,15 @@ import pandas as pd
 # pyrefly: ignore [missing-import]
 import pyarrow as pa
 from botocore.exceptions import ClientError
+import tempfile
+from pathlib import Path
+from boto3.s3.transfer import TransferConfig
 
+_TRANSFER = TransferConfig(
+    num_download_attempts=10,
+    max_concurrency=4,
+    multipart_chunksize=16 * 1024 * 1024,
+)
 # ================== CẤU HÌNH ==================
 BUCKET        = "data-pipeline-datalake-537390611425"
 BRONZE_PREFIX = "bronze/arctic_shift/raw"
@@ -26,53 +34,46 @@ class BronzeReadError(Exception):
 
 def read_bronze_jsonl(kind: str, month: str, label: str, allow_missing: bool = False):
     """
-    Stream JSONL từ bronze S3 → generator of dict.
-
-    - allow_missing=True : file không tồn tại → return empty (bỏ qua im lặng).
-    - allow_missing=False: file không tồn tại → raise BronzeReadError (mặc định).
-    - Các lỗi S3 khác (AccessDenied, NetworkError, ...) → LUÔN raise.
-    - File rỗng (0 dòng) → raise.
-    - Parse error > 1% → raise.
+    Tải bronze JSONL về file tạm (retry theo từng phần) rồi stream từng dòng.
+    Chi phí: cần trống bằng kích thước file (vài GB) trong thư mục tạm của hệ thống.
     """
     y, m = month.split("-")
     key = f"{BRONZE_PREFIX}/{kind}/year={y}/month={m}/{label}.jsonl"
     uri = f"s3://{BUCKET}/{key}"
 
-    try:
-        obj = s3.get_object(Bucket=BUCKET, Key=key)
-    except ClientError as e:
-        code = e.response.get("Error", {}).get("Code", "Unknown")
-        if code in ("NoSuchKey", "404", "NotFound"):
-            if allow_missing:
-                print(f"  ⚠️  {uri}: không tồn tại, bỏ qua.")
-                return
-            raise BronzeReadError(f"Bronze thiếu file: {uri}") from e
-        raise BronzeReadError(f"S3 read fail ({code}): {uri}") from e
-    except Exception as e:
-        raise BronzeReadError(f"S3 read fail: {uri}: {e}") from e
-
-    n_lines = 0
-    n_parse_err = 0
-    for line in obj["Body"].iter_lines():
-        if not line:
-            continue
-        n_lines += 1
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "in.jsonl"
         try:
-            yield json.loads(line)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            n_parse_err += 1
+            s3.download_file(BUCKET, key, str(path), Config=_TRANSFER)
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "Unknown")
+            if code in ("NoSuchKey", "404", "NotFound"):
+                if allow_missing:
+                    print(f"  ⚠️  {uri}: không tồn tại, bỏ qua.")
+                    return
+                raise BronzeReadError(f"Bronze thiếu file: {uri}") from e
+            raise BronzeReadError(f"S3 read fail ({code}): {uri}") from e
+        except Exception as e:
+            raise BronzeReadError(f"S3 download fail: {uri}: {e}") from e
 
-    # Sau khi stream xong hết
+        n_lines = n_parse_err = 0
+        with open(path, "rb") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                n_lines += 1
+                try:
+                    yield json.loads(line)
+                except ValueError:          # JSONDecodeError + UnicodeDecodeError
+                    n_parse_err += 1
+
     if n_lines == 0:
         raise BronzeReadError(f"File rỗng: {uri}")
-
     if n_parse_err > max(10, n_lines * 0.01):
-        raise BronzeReadError(
-            f"Quá nhiều parse error: {n_parse_err}/{n_lines} dòng ở {uri}"
-        )
+        raise BronzeReadError(f"Quá nhiều parse error: {n_parse_err}/{n_lines} dòng ở {uri}")
     if n_parse_err:
         print(f"  ⚠️  {uri}: {n_parse_err}/{n_lines} dòng parse fail (bỏ qua)")
-
 
 # ================== TRANSFORM ==================
 def _to_ts(u):
