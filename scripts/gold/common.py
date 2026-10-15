@@ -14,7 +14,7 @@ from scripts.silver.common import BUCKET, SILVER_PREFIX, s3
 GOLD_PREFIX    = "gold"
 BACKUP_PREFIX  = "gold/_backups"   # ngoài prefix mọi bảng, Athena không scan
 SKIP_AUTHORS   = ["[deleted]", "automoderator"]
-MIN_EVENTS     = 5
+MIN_EVENTS     = 4
 
 SALT_SPLIT = "split_v1"
 SALT_FLAG  = "flag_v1"
