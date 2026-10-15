@@ -44,12 +44,10 @@ _SUB_BYTES_RE = re.compile(
     re.IGNORECASE,
 )
 
-MONTHS = ["2026-06", "2026-07", "2026-08"]
+MONTHS = ["2026-0̀5"]
 
 TORRENT_INFOHASH = {
-    "2026-06": "3bac8bd352bbb74bbb23df4273cf3da5d66ee5a5",
-    "2026-07": "e04a4fda12826ab1d181eef6512b36aca63c70ff",
-    "2026-08": "f4848163a5fb650e4b15eee0202858447bca120a",
+    "2026-05": "55199eff9368cde1f5c1262dd7c1af09f7503ea5",
 }
 ACADEMIC_TORRENT_URL = "https://academictorrents.com/download/{infohash}.torrent"
 
