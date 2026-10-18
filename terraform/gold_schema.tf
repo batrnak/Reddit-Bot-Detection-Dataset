@@ -88,6 +88,7 @@ locals {
       columns = [
         { name = "user_id",   type = "string" },
         { name = "eval_role", type = "string" }, # botbouncer_B | botsim_heldout | injected
+        { name = "eval_label", type = "bigint" },
       ]
     }
   }

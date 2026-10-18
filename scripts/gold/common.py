@@ -14,7 +14,7 @@ from scripts.silver.common import BUCKET, SILVER_PREFIX, s3
 GOLD_PREFIX    = "gold"
 BACKUP_PREFIX  = "gold/_backups"   # ngoài prefix mọi bảng, Athena không scan
 SKIP_AUTHORS   = ["[deleted]", "automoderator"]
-MIN_EVENTS     = 4
+MIN_EVENTS     = 3
 
 SALT_SPLIT = "split_v1"
 SALT_FLAG  = "flag_v1"
@@ -24,6 +24,28 @@ SALT_FLAG  = "flag_v1"
 def stable_bucket(user_id: str, salt: str, n: int = 100) -> int:
     return int(hashlib.md5(f"{salt}:{user_id}".encode()).hexdigest(), 16) % n
 
+def flags_half_a(flags: pl.DataFrame) -> pl.DataFrame:
+    """
+    Nửa A (bucket 0) làm LF. Nửa B (bucket 1) giữ để đo, KHÔNG bỏ phiếu.
+    PHẢI dùng cùng danh sách flags đầu vào với flags_half_b.
+    """
+    return flags.filter(
+        pl.col("user_id").map_elements(
+            lambda u: stable_bucket(u, SALT_FLAG, 2), return_dtype=pl.Int64
+        ) == 0
+    )
+
+
+def flags_half_b(flags: pl.DataFrame) -> pl.DataFrame:
+    """
+    Nửa B (bucket 1) dùng để evaluate. KHÔNG dùng làm LF.
+    PHẢI dùng cùng danh sách flags đầu vào với flags_half_a.
+    """
+    return flags.filter(
+        pl.col("user_id").map_elements(
+            lambda u: stable_bucket(u, SALT_FLAG, 2), return_dtype=pl.Int64
+        ) == 1
+    )
 
 # ---------- silver ----------
 def silver_keys(kind: str) -> List[str]:
