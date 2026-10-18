@@ -28,3 +28,11 @@ output "glue_tables_silver" {
     aws_glue_catalog_table.silver_bot_users.name,
   ]
 }
+
+output "glue_database_gold" {
+  value = aws_glue_catalog_database.gold.name
+}
+
+output "glue_tables_gold" {
+  value = keys(aws_glue_catalog_table.gold)
+}
