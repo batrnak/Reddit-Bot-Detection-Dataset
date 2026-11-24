@@ -1,100 +1,106 @@
 # Reddit Bot Detection Dataset
 
-Dự án xây dựng dataset phân loại tài khoản Reddit thành **Bot** và **User**. Mỗi mẫu gồm một tài khoản, lịch sử bài đăng và bình luận, cùng nhãn dựa trên bằng chứng từ BotBouncer hoặc verified author flair. Dataset phục vụ huấn luyện và đánh giá mô hình ở cấp tài khoản.
+Dataset này dùng để huấn luyện và đánh giá mô hình phân loại **tài khoản Reddit** thành **Bot (0)** hoặc **User (1)**. Mỗi mẫu gồm một tài khoản, lịch sử bài đăng và bình luận của tài khoản đó trong các subreddit được chọn, cùng một nhãn. Dữ liệu hoạt động đến từ 15 subreddit về tin tức và chính trị, như r/politics, r/news và r/worldnews.
 
-Cửa sổ mặc định là **12 tháng, từ 09/2025 đến hết 08/2026**. Dữ liệu hoạt động đến từ 15 subreddit về tin tức và chính trị. Chọn tháng kết thúc bằng `--end-month`.
+**Tiến độ dữ liệu.** Đợt rà soát tháng 06–08/2026 ghi nhận 94.272 bài đăng, 5.668.129 bình luận và tìm được 142 ứng viên Bot, 236 ứng viên User. Bước tải và xử lý đã được kiểm tra thêm với tháng 09/2025. Bản **09/2025–08/2026** đang được chuẩn bị. Số lượng cuối cùng sẽ có trong báo cáo export.
 
-## Nguồn dữ liệu và quy tắc gán nhãn
+## Hai file dataset
 
-- **Arctic Shift** cung cấp dump bài đăng và bình luận theo tháng. Danh sách 15 subreddit nằm trong [cấu hình lọc](scripts/data_source/download.py). [Danh sách dump Arctic Shift](https://github.com/ArthurHeitmann/arctic_shift/blob/master/download_links.md)
-- **BotBouncer** cung cấp cờ ở cấp tài khoản. Nhãn **`0 = Bot`** lấy từ half A, với cờ `banned`, không có `organic` hoặc `service`, và ít nhất 4 sự kiện trước `flagged_at`. Half B được giữ riêng cho đánh giá. [r/BotBouncer](https://www.reddit.com/r/BotBouncer/)
-- **Verified author flair** cung cấp tín hiệu cho nhãn **`1 = User`**. Flair phải được ghi nhận trong cửa sổ dữ liệu, tài khoản phải có ít nhất 4 sự kiện ở các subreddit mục tiêu và không có trong `bot_users`. Các nguồn gồm r/AskDocs, r/science và những cộng đồng được định nghĩa trong hai module kiểm tra. [Nguồn flair chính](exports/verified_user_probe_2026.py) · [Nguồn bổ sung](exports/expand_verified_users_2026.py)
-- **BotSim-24** là bộ tham chiếu định dạng và nguồn xác định các identity held-out. Exporter loại các identity held-out, kể cả tên Reddit tương ứng của tài khoản human trong BotSim. [BotSim-24 Dataset](https://github.com/QQQQQQBY/BotSim/tree/main/BotSim-24-Dataset)
+- **`Users.csv`** có một dòng cho mỗi tài khoản, gồm nhãn `0` hoặc `1` trong cột `label`, số bài đăng, số bình luận và danh sách subreddit.
+- **`user_post_comment.json`** lưu lịch sử hoạt động theo `user_id`. Mỗi tài khoản có `posts` (bài đăng), `comment_1` (bình luận trả lời bài đăng) và `comment_2` (bình luận trả lời một bình luận khác, có thể ở nhiều độ sâu).
 
-Các tài khoản có bằng chứng xung đột hoặc chưa đủ điều kiện gán nhãn nằm ngoài dataset bàn giao. Verified flair cung cấp bằng chứng về chủ tài khoản. Độ tin cậy của nhãn và khả năng phát hiện bot từ LLM generator mới cần được đánh giá riêng.
+Đọc nhãn từ `Users.csv`, rồi dùng `user_id` (tên tài khoản Reddit viết thường) để tìm lịch sử của cùng tài khoản trong JSON. Hai file dựa trên định dạng BotSim-24, với cột `label` ghi rõ nhãn trên từng dòng. [Định dạng tham chiếu BotSim-24](https://github.com/QQQQQQBY/BotSim/tree/main/BotSim-24-Dataset)
 
-## Pipeline
+GitHub lưu mã nguồn. Để sử dụng dữ liệu, lấy hai file từ bản bàn giao của nhóm hoặc tự tạo. [Cách tạo lại dataset](#tạo-lại-dataset)
 
-![Sequence diagram từ backfill Bronze và Silver, qua gold.users, đến export Users.csv và user_post_comment.json với nhãn từ BotBouncer và verified flair](docs/pipeline.svg)
-
-1. **Bronze.** Tải và lọc dump theo subreddit. Tách posts BotBouncer thành luồng cờ riêng, rồi upload JSONL lên S3 theo tháng.
-2. **Silver.** Chuẩn hóa thành ba nhóm Parquet `posts`, `comments` và `bot_users`. Mỗi nhóm có một file cho mỗi tháng UTC.
-3. **Gold.** Tính lại `gold.users` từ Silver, đếm hoạt động và giữ `node_idx` ổn định cho tài khoản cũ. `user_id` dùng tên Reddit viết thường. Split theo hash của `user_id` với tỷ lệ mục tiêu **70/15/15** cho train, validation và test. Tỷ lệ này áp dụng trước bước chọn nhãn.
-4. **Export.** Đối chiếu số hoạt động với Gold, áp dụng quy tắc gán nhãn và cutoff, rồi kiểm tra ID, nhãn và số hoạt động khớp giữa hai file trước khi xuất.
-
-## Định dạng dataset
-
-- `Users.csv` có một dòng cho mỗi tài khoản, gồm `user_id`, số bài đăng, số bình luận, subreddit và cột `label`.
-- `user_post_comment.json` dùng cùng `user_id` làm key. Mỗi tài khoản có `posts`, `comment_1` và `comment_2`. `comment_1` trả lời bài đăng (`t3_`). `comment_2` trả lời bình luận (`t1_`) và có thể sâu hơn cấp 2, nên `level` để `null`.
-- `report.json` trong thư mục `_evidence` bên cạnh dataset ghi cửa sổ dữ liệu, số mẫu theo lớp và split, số BotBouncer B dùng được cho đánh giá, cùng thống kê nguồn flair. Thư mục này cũng chứa cache bằng chứng theo nguồn.
-
-Ví dụ rút gọn cho một tài khoản có 1 bài đăng, 3 bình luận và nhãn User:
+Ví dụ dưới đây minh họa tài khoản `user_demo` có nhãn User, với một bài đăng và ba bình luận.
 
 ```csv
-user_id,submission_num,comment_num,label
-user_demo,1,3,1
+user_id,name,description,submission_num,comment_num,character_setting,comment_num_1,comment_num_2,subreddit,label
+user_demo,user_demo,,1,3,,2,1,['politics'],1
 ```
+
+Trong `user_post_comment.json`, lịch sử của cùng tài khoản có dạng rút gọn như sau.
 
 ```json
 {
   "user_demo": {
-    "posts": [{"submission_id": "p01", "posts": "Bài mẫu", "subreddit": "news"}],
+    "posts": [{"submission_id": "p01", "posts": "Nội dung bài đăng", "subreddit": "politics"}],
     "comment_1": [
-      {"comment_id": "c01", "parent_id": "t3_p01", "comment_body": "Bình luận mẫu"},
-      {"comment_id": "c02", "parent_id": "t3_p01"}
+      {"comment_id": "c01", "parent_id": "t3_p01", "comment_body": "Bình luận thứ nhất"},
+      {"comment_id": "c02", "parent_id": "t3_p01", "comment_body": "Bình luận thứ hai"}
     ],
-    "comment_2": [{"comment_id": "c03", "parent_id": "t1_c01", "level": null}]
+    "comment_2": [
+      {"comment_id": "c03", "parent_id": "t1_c01", "comment_body": "Trả lời c01", "level": null}
+    ]
   }
 }
 ```
 
-Hai file chứa các tài khoản đủ điều kiện từ cả ba split. Khi dùng dataset, lấy split từ `gold.users` hoặc tính lại bằng `stable_bucket(user_id, SALT_SPLIT, 100)`. Bucket `0–69` là train, `70–84` là validation và `85–99` là test. [Cấu hình split](scripts/gold/common.py) · [Cách gán split](scripts/gold/build_users.py)
+## Nhãn đến từ đâu?
 
-## Chuẩn bị và chạy
+- **`0 = Bot`.** BotBouncer cung cấp danh sách tài khoản có cờ `banned`. Pipeline lọc bỏ tài khoản có cờ `organic` hoặc `service`, rồi chia phần còn lại thành hai nhóm cố định A và B. Nhãn Bot lấy từ nhóm A, với ít nhất 4 hoạt động (bài đăng hoặc bình luận) **trước thời điểm bị gắn cờ**. [BotBouncer](https://www.reddit.com/r/BotBouncer/)
+- **`1 = User`.** Tài khoản phải có `verified author flair` hợp lệ trong cùng kỳ, tức dấu xác minh gắn với tên tác giả ở một cộng đồng như r/AskDocs hoặc r/science. Tài khoản đó cũng phải có ít nhất 4 hoạt động trong 15 subreddit mục tiêu và vắng mặt trong danh sách cờ bot (`bot_users`). Subreddit cung cấp dấu xác minh có thể khác subreddit cung cấp lịch sử hoạt động. [Nguồn flair](exports/verified_user_probe_2026.py) · [Nguồn bổ sung](exports/expand_verified_users_2026.py)
 
-Chạy từ thư mục gốc của repo. Môi trường cần Python, quyền đọc và ghi trên bucket S3 đã cấu hình, cùng `aria2c`, `zstd` và `rg` cho bước tải và lọc. [Cấu hình S3](scripts/silver/common.py) · [Hạ tầng AWS](terraform/)
+Chỉ tài khoản có đủ bằng chứng cho một trong hai nhãn mới được xuất. Tài khoản thiếu bằng chứng hoặc có bằng chứng mâu thuẫn được bỏ qua. Verified flair là bằng chứng về người đứng tên tài khoản. Việc ai viết từng bài vẫn chưa được xác minh.
+
+## Chia dữ liệu và đánh giá
+
+Hai file chứa cả **train**, **validation** và **test**. Mỗi tài khoản thuộc đúng một split, nên toàn bộ bài đăng và bình luận của nó đi cùng nhau. Tỷ lệ mục tiêu trước khi chọn nhãn là 70/15/15. Có thể xem split trong `gold.users` hoặc tính trực tiếp từ `user_id` trong CSV bằng Python, kể cả khi chỉ có hai file.
+
+```python
+from hashlib import md5
+
+def reddit_split(user_id):
+    bucket = int(md5(f"split_v1:{user_id}".encode("utf-8")).hexdigest(), 16) % 100
+    if bucket < 70:
+        return "train"
+    if bucket < 85:
+        return "val"
+    return "test"
+```
+
+Ngoài ba split trên, dự án giữ riêng **BotBouncer B** để đánh giá trên các tài khoản bị gắn cờ, và **BotSim-24 held-out** để đánh giá trên benchmark có bot LLM mô phỏng. Tài khoản của hai nhóm này được loại khỏi hai file bàn giao. Lệnh export kiểm tra ID, nhãn và số hoạt động giữa hai file, sau đó ghi số mẫu từng lớp theo split và số BotBouncer B đủ điều kiện vào báo cáo. Khả năng phát hiện bot LLM ngoài BotSim-24 cần được kiểm chứng riêng.
+
+## Pipeline
+
+![Sequence diagram từ tải dump Arctic Shift, xử lý trên S3, đến gán nhãn và xuất hai file dataset](docs/pipeline.svg)
+
+1. **Bronze và Silver.** Tải bản lưu Reddit theo tháng từ Arctic Shift. Lọc 15 subreddit, tách dữ liệu cờ bot và lưu trên S3. Silver chuẩn hóa thành ba nhóm Parquet `posts`, `comments` và `bot_users`. [Danh sách dump Arctic Shift](https://github.com/ArthurHeitmann/arctic_shift/blob/master/download_links.md)
+2. **Gold.** Tạo bảng `gold.users` từ hoạt động trong Silver để đếm số sự kiện và lưu split của mỗi tài khoản.
+3. **Export.** Ghép lịch sử hoạt động với các nguồn nhãn, áp dụng cutoff và kiểm tra hai file trước khi xuất ra máy chạy.
+
+## Tạo lại dataset
+
+Chạy từ thư mục gốc repo. Cần Python, quyền đọc và ghi vào [bucket S3 đã cấu hình](scripts/silver/common.py), cùng `aria2c`, `zstd` và `rg` cho bước tải và lọc. Đặt [file Users.csv gốc của BotSim-24](https://github.com/QQQQQQBY/BotSim/tree/main/BotSim-24-Dataset) tại `data/raw/botsim24/Users.csv` để exporter có bản dự phòng cho việc đối chiếu tài khoản held-out.
 
 ```powershell
 python -m pip install -r requirements.txt
 $env:PYTHONIOENCODING = "utf-8"
 ```
 
-Chuẩn bị bản `Users.csv` chính thức của BotSim-24 tại `data/raw/botsim24/Users.csv` để exporter có bản dự phòng. Exporter kiểm tra checksum của bản S3 và bản local trước khi dùng. [BotSim-24 Dataset](https://github.com/QQQQQQBY/BotSim/tree/main/BotSim-24-Dataset)
+1. **Tải và xử lý theo tháng.** Lệnh bỏ qua tháng đã có đủ ba file Silver trên S3. Có thể thêm `--month YYYY-MM` để thử riêng một tháng. Nếu download bị gián đoạn, chạy lại với cùng `--work-dir` để dùng lại file đã tải. Chọn ổ có đủ chỗ chứa dump đang tải và JSONL đã lọc.
 
-**1. Backfill Bronze và Silver.**
+   ```powershell
+   python -u -m scripts.data_source.backfill_year --end-month 2026-08 --work-dir C:\arctic_year_test
+   ```
 
-```powershell
-python -u -m scripts.data_source.backfill_year --end-month 2026-08 --work-dir C:\arctic_year_test
-```
+2. **Tạo bảng tài khoản** sau khi Silver đủ đúng 12 tháng trong cửa sổ trên.
 
-**2. Dựng `gold.users` sau khi backfill báo đủ 12 tháng.**
+   ```powershell
+   python -m scripts.gold.build_users
+   ```
 
-```powershell
-python -m scripts.gold.build_users
-```
+3. **Xuất bộ dataset có nhãn.**
 
-**3. Chọn nhãn và xuất dataset.**
+   ```powershell
+   python -m scripts.gold.export_verified_year --end-month 2026-08
+   ```
 
-```powershell
-python -m scripts.gold.export_verified_year --end-month 2026-08
-```
+Sau khi export thành công, lấy `Users.csv` và `user_post_comment.json` trong `exports/dataset_verified_2025-09_2026-08_v1/`. Báo cáo nằm tại `exports/dataset_verified_2025-09_2026-08_v1_evidence/report.json`. Dùng `--destination` với đường dẫn mới khi tạo version tiếp theo.
 
-- **Backfill từng tháng.** Giữ nguyên `--work-dir` khi chạy lại để tận dụng file đã tải hoặc lọc. Tháng đã đủ ba file Silver được bỏ qua. Dùng `--month YYYY-MM` để chạy thử một tháng. Các tháng cần tải phải có trong [danh sách torrent](scripts/data_source/monthnote).
-- **Kiểm tra cửa sổ.** Backfill toàn kỳ và exporter yêu cầu mỗi nhóm Silver có đúng 12 file Parquet theo cửa sổ đã chọn.
-- **Dung lượng local.** Chọn ổ có chỗ cho dump của tháng đang tải, file phụ của torrent và JSONL tích lũy. Thư mục tạm cũng cần chỗ để xử lý JSONL và Parquet tải từ S3.
-- **Xuất theo version.** Lệnh trên tạo `exports/dataset_verified_2025-09_2026-08_v1/`. Dùng `--destination` với đường dẫn mới để xuất version tiếp theo. Dataset, cache bằng chứng và báo cáo là output local theo [quy tắc Git](.gitignore).
+## Mã nguồn
 
-## Cấu trúc repo
-
-- [`scripts/data_source/`](scripts/data_source/) tải dump, lọc subreddit và điều phối backfill.
-- [`scripts/bronze/`](scripts/bronze/) upload JSONL lên S3.
-- [`scripts/silver/`](scripts/silver/) chuẩn hóa dữ liệu theo tháng và ghi Parquet.
-- [`scripts/gold/`](scripts/gold/) dựng bảng tài khoản, chọn dataset theo nguồn và ghi hai file bàn giao.
-- [`exports/`](exports/) chứa hai module verified flair ở cấp đầu và các thư mục output local.
-- [`terraform/`](terraform/) định nghĩa hạ tầng AWS và Glue Data Catalog cho các bảng truy vấn bằng Athena.
-
-## Kết quả đã đối chiếu
-
-Trong giai đoạn **06–08/2026**, Silver có **94.272 bài đăng** và **5.668.129 bình luận**. Rà soát theo nguồn xác định **142 tài khoản Bot** và **236 tài khoản User** đủ điều kiện trên cửa sổ này. Backfill tháng **09/2025** cũng đã được kiểm tra qua Bronze và Silver. Số lượng của cửa sổ 12 tháng được thống kê sau khi export trong `report.json`.
-
-Các quy tắc về identity, cutoff, held-out và kết quả thí nghiệm trước đây được ghi trong [AGENTS.md](AGENTS.md). Mã nguồn dùng giấy phép [MIT](LICENSE).
+- [Download, lọc và backfill](scripts/data_source/) · [Upload Bronze](scripts/bronze/) · [Chuẩn hóa Silver](scripts/silver/)
+- [Tạo bảng tài khoản và split](scripts/gold/build_users.py) · [Chọn nhãn và export](scripts/gold/export_verified_year.py) · [Ghi và kiểm tra hai file](scripts/gold/dataset_files.py)
+- [Hạ tầng AWS](terraform/) · [Quy tắc xử lý và lịch sử thí nghiệm](AGENTS.md) · [Giấy phép mã nguồn MIT](LICENSE)
