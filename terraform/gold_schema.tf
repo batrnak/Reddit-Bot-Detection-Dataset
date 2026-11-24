@@ -111,13 +111,14 @@ locals {
     }
 
     weak_labels = {
-      description = "Nhan yeu sau label model. p_bot dung de xep hang, khong phai xac suat"
+      description = "Bang chung positive va unknown; evidence_score chi dung de xep hang"
       columns = [
         { name = "user_id",      type = "string" },
-        { name = "p_bot",        type = "double" },
-        { name = "label",        type = "bigint" }, # 0 nguoi | 1 bot | -1 khong chac
-        { name = "n_lfs_voted",  type = "bigint" },
-        { name = "label_source", type = "string" }, # vd: label_model_v1
+        { name = "n_lfs_vote",    type = "bigint" },
+        { name = "lf_mask",        type = "bigint" },
+        { name = "evidence_score", type = "double" },
+        { name = "label_status",   type = "string" },
+        { name = "y_pu",           type = "bigint" }, # 1 hoac NULL (unlabeled)
       ]
     }
 

@@ -76,6 +76,11 @@ def _assign_persistent_node_idx(users: pl.DataFrame) -> pl.DataFrame:
     
     if old_users is not None and old_users.height > 0:
         print(f"  Found {old_users.height:,} existing users, preserving node_idx...")
+        # Giữ user cũ ngay cả khi Silver hiện tại không còn activity của user đó.
+        absent = old_users.join(users.select("user_id"), on="user_id", how="anti")
+        if absent.height:
+            users = pl.concat([users, absent.select("user_id").with_columns(
+                pl.lit(0, dtype=users.schema["n_events"]).alias("n_events"))])
         
         # Lấy max node_idx từ bảng cũ
         max_old_idx = old_users["node_idx"].max()
@@ -163,7 +168,7 @@ def build_users_table() -> None:
             .alias("split"),
     ])
 
-    users = users.select(["user_id", "node_idx", "n_events", "eligible", "split"])
+    users = users.select(["user_id", "node_idx", "n_events", "eligible", "split"]).sort("user_id")
     users = users.with_columns(pl.col("n_events").cast(pl.Int64))
 
     # 5. Validate

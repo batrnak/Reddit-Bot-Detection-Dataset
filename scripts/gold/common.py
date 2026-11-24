@@ -3,6 +3,8 @@
 import hashlib
 from datetime import datetime
 from io import BytesIO
+import tempfile
+from pathlib import Path
 from typing import List, Optional
 
 # pyrefly: ignore [missing-import]
@@ -14,19 +16,28 @@ from scripts.silver.common import BUCKET, SILVER_PREFIX, s3
 GOLD_PREFIX    = "gold"
 BACKUP_PREFIX  = "gold/_backups"   # ngoài prefix mọi bảng, Athena không scan
 SKIP_AUTHORS   = ["[deleted]", "automoderator"]
-MIN_EVENTS     = 3
+MIN_EVENTS     = 4
 
 SALT_SPLIT = "split_v1"
 SALT_FLAG  = "flag_v1"
+# ---------- BotSim-24 ----------
+BOTSIM_USERS_CSV_KEY = "bronze/botsim24/raw/Users.csv"
+BOTSIM_N_BOT = 1000
+SALT_BOTSIM_HELDOUT = "botsim_heldout_v1"
+HELDOUT_PCT = 30
 
 
 # ---------- hash ổn định ----------
 def stable_bucket(user_id: str, salt: str, n: int = 100) -> int:
     return int(hashlib.md5(f"{salt}:{user_id}".encode()).hexdigest(), 16) % n
 
+
+def botsim_bucket(user_id: str) -> int:
+    return stable_bucket(user_id, SALT_BOTSIM_HELDOUT, 100)
+
 def flags_half_a(flags: pl.DataFrame) -> pl.DataFrame:
     """
-    Nửa A (bucket 0) làm LF. Nửa B (bucket 1) giữ để đo, KHÔNG bỏ phiếu.
+    Nửa A (bucket 0) dùng để chọn nhãn Bot, nửa B (bucket 1) giữ cho đánh giá.
     PHẢI dùng cùng danh sách flags đầu vào với flags_half_b.
     """
     return flags.filter(
@@ -66,12 +77,56 @@ def silver_keys(kind: str) -> List[str]:
 
 def iter_silver(kind: str, columns: List[str]):
     for key in silver_keys(kind):
-        body = s3.get_object(Bucket=BUCKET, Key=key)["Body"].read()
-        yield key, pl.read_parquet(BytesIO(body), columns=columns)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "silver.parquet"
+            s3.download_file(BUCKET, key, str(path))
+            yield key, pl.read_parquet(path, columns=columns)
 
 
 def drop_bad_authors(df: pl.DataFrame, col: str = "author_name") -> pl.DataFrame:
     return df.filter(pl.col(col).is_not_null() & ~pl.col(col).is_in(SKIP_AUTHORS))
+
+
+def read_flags(*, banned_source: str | None = None) -> pl.DataFrame:
+    """Tổng hợp mọi flair và cutoff. banned_source chỉ giới hạn nguồn của is_banned."""
+    parts = []
+    columns = ["username", "flair", "flagged_at"]
+    is_banned = pl.col("flair") == "banned"
+    if banned_source is not None:
+        columns.append("source_subreddit")
+        is_banned = is_banned & (pl.col("source_subreddit").str.to_lowercase() == banned_source.lower())
+    for _, df in iter_silver("bot_users", columns):
+        df = drop_bad_authors(df, "username").with_columns(
+            pl.col("username").str.to_lowercase(),
+            pl.col("flair").str.to_lowercase().str.strip_chars(),
+        )
+        parts.append(df.group_by("username").agg(
+            is_banned.fill_null(False).any().alias("is_banned"),
+            pl.col("flair").is_in(["organic", "service"]).fill_null(False).any().alias("is_benign"),
+            pl.col("flagged_at").min().alias("flagged_at"),
+        ))
+    assert parts, "Không có bot_users"
+    flags = pl.concat(parts).group_by("username").agg(
+        pl.col("is_banned").any(), pl.col("is_benign").any(),
+        pl.col("flagged_at").min(),
+    ).rename({"username": "user_id"})
+    assert_unique(flags, ["user_id"], "flags")
+    return flags
+
+
+def positive_flags(flags: pl.DataFrame) -> pl.DataFrame:
+    return flags.filter(pl.col("is_banned") & ~pl.col("is_benign"))
+
+
+def eval_exclusion_users(eval_users: pl.DataFrame) -> pl.DataFrame:
+    """Loại cả alias Reddit của human BotSim heldout; bot BotSim là simulation."""
+    ids = eval_users.select("user_id")
+    humans = eval_users.filter(
+        (pl.col("eval_role") == "botsim_heldout") & (pl.col("eval_label") == 0)
+    ).select("user_id")
+    assert humans.filter(~pl.col("user_id").str.starts_with("bs_")).is_empty(), "BotSim human thiếu prefix"
+    aliases = humans.select(pl.col("user_id").str.slice(3).alias("user_id"))
+    return pl.concat([ids, aliases]).unique()
 
 
 # ---------- gold ----------
@@ -115,16 +170,6 @@ def write_gold(df: pl.DataFrame, table: str, backup: bool = True) -> None:
     df.write_parquet(buf, compression="snappy")
     s3.put_object(Bucket=BUCKET, Key=key, Body=buf.getvalue())
     print(f"  ghi s3://{BUCKET}/{key}  ({df.height:,} dòng)")
-
-
-def eligible_users() -> pl.DataFrame:
-    """Tập user chung mọi bảng khác phải join vào: user_id, node_idx, split.
-    Yêu cầu: build_users_table.py đã chạy trước.
-    """
-    users = read_gold("users", ["user_id", "node_idx", "eligible", "split"], missing_ok=True)
-    if users is None:
-        raise RuntimeError("Bảng 'users' chưa tồn tại. Chạy build_users_table.py trước.")
-    return users.filter(pl.col("eligible")).select(["user_id", "node_idx", "split"])
 
 
 def assert_unique(df: pl.DataFrame, cols: List[str], name: str) -> None:

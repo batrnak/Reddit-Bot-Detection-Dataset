@@ -1,11 +1,11 @@
 # scripts/ingest/crawl_flags.py
 """
-Tải + filter Arctic Shift dumps cho 3 tháng.
+Tải + filter Arctic Shift dumps theo tháng, mặc định 2025-09 đến 2026-08.
 
 Fix history (đã áp dụng):
   #1  .strict marker cho posts → không skip nhầm file cũ do rg tạo
   #2  Xoá .zst corrupt → xoá luôn .aria2 control (tránh resume sai)
-  #3  download_specific: file ≥ 5GB vẫn tải nếu còn .aria2
+  #3  download_specific: aria2 kiểm tra từng piece khi tải tiếp
   #4  filter_comments_python bắt UnicodeDecodeError (không chết giữa file)
   #5  filter_posts_strict: rg pre-filter + json.loads check top-level
   #6  download_specific: chỉ tải file cần (RS hoặc RC)
@@ -14,6 +14,8 @@ Fix history (đã áp dụng):
   #9  finally: kill subprocess nếu exception → không treo
 """
 
+import argparse
+import ast
 import json
 import re
 import shutil
@@ -44,18 +46,34 @@ _SUB_BYTES_RE = re.compile(
     re.IGNORECASE,
 )
 
-MONTHS = ["2026-0̀5"]
+MONTHS = (
+    "2025-09", "2025-10", "2025-11", "2025-12",
+    "2026-01", "2026-02", "2026-03", "2026-04",
+    "2026-05", "2026-06", "2026-07", "2026-08",
+)
 
-TORRENT_INFOHASH = {
-    "2026-05": "55199eff9368cde1f5c1262dd7c1af09f7503ea5",
-}
+
+def _torrent_hashes():
+    note = Path(__file__).with_name("monthnote")
+    for statement in ast.parse(note.read_text(encoding="utf-8-sig")).body:
+        if isinstance(statement, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "TORRENT_INFOHASH"
+            for target in statement.targets
+        ):
+            return ast.literal_eval(statement.value)
+    raise RuntimeError(f"Thiếu TORRENT_INFOHASH trong {note}")
+
+
+TORRENT_INFOHASH = _torrent_hashes()
 ACADEMIC_TORRENT_URL = "https://academictorrents.com/download/{infohash}.torrent"
 
-MIN_FILE_SIZE      = 5 * 1024 ** 3
 VERIFY_TIMEOUT     = 3600
 CHUNK_SIZE         = 32 * 1024 * 1024
 MIN_POSTS_MATCH    = 50_000
 MIN_COMMENTS_MATCH = 500_000
+BT_STALL_TIMEOUT   = 300
+BT_MAX_ATTEMPTS    = 3
+BT_RETRYABLE_CODES = {2, 3, 4, 5, 6, 7, 19, 22, 29}
 
 CORRUPTION_MARKERS = (
     "corruption", "unsupported format", "unknown frame",
@@ -181,61 +199,54 @@ def _find_index(torrent_path: Path, filename: str) -> int | None:
     return None
 
 
-def download_specific(torrent_path: Path, month: str, want: set[str]):
+def download_specific(torrent_path: Path, month: str, want: set[str], *, remove_unselected=False):
     """
     Chỉ tải file cần. want: subset của {'RS', 'RC'}.
-    Fix #3: file ≥ 5GB vẫn tải nếu còn .aria2 (tải dở).
+    Giữ raw và control file để aria2 kiểm tra và tiếp tục khi retry.
     """
+    if not want:
+        return
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    aria2_present = bool(find_all_aria2())
-    to_download = []
+    kinds = sorted(want)
+    indices = []
+    for kind in kinds:
+        name = f"{kind}_{month}.zst"
+        index = _find_index(torrent_path, name)
+        if index is None:
+            raise RuntimeError(f"Không tìm thấy {name} trong {torrent_path.name}")
+        indices.append(str(index))
 
-    for kind in want:
-        zst = zst_path(month, kind)
-        already_full = (
-            zst.exists()
-            and zst.stat().st_size >= MIN_FILE_SIZE
-            and not aria2_present          # FIX #3
-        )
-        if already_full:
-            size_gb = zst.stat().st_size / (1024 ** 3)
-            print(f"  → {zst.name} đã có ({size_gb:.1f} GB), không còn .aria2 → skip.")
-            continue
-
-        if zst.exists() and aria2_present:
-            size_gb = zst.stat().st_size / (1024 ** 3)
-            print(f"  → {zst.name} ({size_gb:.1f} GB) nhưng còn .aria2 → tải tiếp.")
-
-        fname = f"{kind}_{month}.zst"
-        idx = _find_index(torrent_path, fname)
-        if idx is None:
-            print(f"  ❌ Không tìm thấy {fname} trong torrent")
-            continue
-        to_download.append((kind, idx))
-
-    if not to_download:
-        print(f"  → Không cần tải gì.")
-        return
-
-    indices = ",".join(str(i) for _, i in to_download)
-    kinds_str = "+".join(k for k, _ in to_download)
-    print(f"  → aria2c tải {kinds_str} (index {indices})")
-
+    kinds_str = "+".join(kinds)
     cmd = [
         "aria2c",
         "--seed-time=0", "--continue=true",
         "--allow-overwrite=true", "--auto-file-renaming=false",
-        "--max-connection-per-server=16", "--split=16",
+        "--max-connection-per-server=4", "--split=4",
         "--bt-max-peers=200", "--bt-request-peer-speed-limit=5M",
         "--enable-dht=true", "--enable-peer-exchange=true",
         "--file-allocation=none", "--summary-interval=30",
-        "--check-integrity=true",
-        f"--select-file={indices}",
+        "--check-integrity=true", "--auto-save-interval=10",
+        f"--bt-stop-timeout={BT_STALL_TIMEOUT}",
+        f"--bt-remove-unselected-file={'true' if remove_unselected else 'false'}",
+        f"--select-file={','.join(indices)}",
         "-d", str(DATA_DIR),
         str(torrent_path),
     ]
-    subprocess.run(cmd, check=True)
+    for attempt in range(1, BT_MAX_ATTEMPTS + 1):
+        print(f"  → aria2c tải {kinds_str} {month} (lần {attempt}/{BT_MAX_ATTEMPTS})", flush=True)
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError as error:
+            if error.returncode not in BT_RETRYABLE_CODES or attempt == BT_MAX_ATTEMPTS:
+                raise RuntimeError(
+                    f"Tải {kinds_str} {month} dừng (aria2c exit {error.returncode}). "
+                    f"Giữ raw và control file trong {DATA_DIR}."
+                ) from error
+            print(f"  ⚠️ aria2c exit {error.returncode}. Thử tải tiếp sau 15 giây.", flush=True)
+            time.sleep(15)
+        else:
+            return
 
 
 # ================== FILTER: POSTS (strict) ==================
@@ -452,129 +463,62 @@ def delete_corrupt_zst(zst: Path):
 
 
 # ================== MAIN ==================
-def main():
+def main(months=MONTHS):
+    assert months, "Không có tháng để tải"
+    assert all(re.fullmatch(r"[0-9a-fA-F]{40}", TORRENT_INFOHASH.get(month, "")) for month in months), (
+        "Có tháng thiếu torrent info-hash hợp lệ trong monthnote"
+    )
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     FILTERED_DIR.mkdir(parents=True, exist_ok=True)
 
-    rg = get_ripgrep_path()
-    if not rg:
-        print("❌ Cần ripgrep. Cài: scoop install ripgrep")
-        return
-
     print(f"Work dir     : {WORK_DIR}")
     print(f"Filtered dir : {FILTERED_DIR}")
-    print(f"Months       : {', '.join(MONTHS)}")
-    print(f"ripgrep      : {rg}\n")
+    print(f"Months       : {', '.join(months)}")
 
-    for month in MONTHS:
-        print(f"\n{'=' * 60}\n  {month}\n{'=' * 60}")
-
-        try:
-            posts_out = out_path(month, "posts")
-            comments_out = out_path(month, "comments")
-
-            # FIX #1: posts_done chỉ khi có .strict marker
-            posts_done = (
-                strict_marker(month).exists()
-                and is_output_valid(posts_out, MIN_POSTS_MATCH)
-            )
-            comments_done = is_output_valid(comments_out, MIN_COMMENTS_MATCH)
-
-            if posts_done and comments_done:
-                print(f"  → ✅ Cả 2 output đã hợp lệ. Skip.")
-                if zst_path(month, "RS").exists() or zst_path(month, "RC").exists():
-                    if zst_path(month, "RS").exists():
-                        delete_zst_safe(month, "RS")
-                    if zst_path(month, "RC").exists():
-                        delete_zst_safe(month, "RC")
+    kinds = (
+        ("RS", "posts", filter_posts_strict, MIN_POSTS_MATCH),
+        ("RC", "comments", filter_comments_python, MIN_COMMENTS_MATCH),
+    )
+    for index, month in enumerate(months, start=1):
+        print(f"\n{'=' * 60}\n  {month} ({index}/{len(months)})\n{'=' * 60}")
+        for code, kind, filter_dump, minimum in kinds:
+            output = out_path(month, kind)
+            marker = strict_marker(month)
+            if (code != "RS" or marker.is_file()) and is_output_valid(output, minimum):
+                print(f"  → ✅ {output.name} đã hợp lệ. Skip.")
                 continue
 
-            # Xác định cần tải gì
-            want = set()
-            if not posts_done:
-                want.add("RS")
-            if not comments_done:
-                want.add("RC")
-
-            print(f"  → Cần tải: posts={'RS' if not posts_done else 'skip'}, "
-                  f"comments={'RC' if not comments_done else 'skip'}")
-
-            # Tải torrent metadata
+            if code == "RS":
+                assert get_ripgrep_path(), "Thiếu ripgrep"
+                marker.unlink(missing_ok=True)
             torrent = download_torrent(month)
-            if torrent is None:
-                continue
+            assert torrent is not None, f"Thiếu torrent {month}"
+            download_specific(torrent, month, {code})
+            raw = zst_path(month, code)
+            assert raw.is_file(), f"Thiếu raw dump {raw}"
 
-            # Tải chỉ file cần
-            try:
-                download_specific(torrent, month, want)
-            except subprocess.CalledProcessError as e:
-                print(f"  ⚠️  aria2c lỗi: {e}")
-                continue
+            status = verify_zst(raw)
+            if status == "corrupt":
+                delete_corrupt_zst(raw)
+                raise RuntimeError(f"Dump hỏng: {raw.name}. Chạy lại để tải lại.")
+            if status == "unknown":
+                print(f"  → Vẫn thử filter {raw.name}.")
 
-            # Verify từng file
-            to_filter = {}
-            for kind in want:
-                zst = zst_path(month, kind)
-                if not zst.exists():
-                    print(f"  ❌ Thiếu {zst.name}")
-                    continue
-
-                v = verify_zst(zst)
-                if v == "corrupt":
-                    delete_corrupt_zst(zst)          # FIX #2
-                    continue
-                if v == "unknown":
-                    print(f"  → Vẫn thử filter {zst.name}.")
-                to_filter[kind] = zst
-
-            # Filter
-            posts_ok = posts_done
-            comments_ok = comments_done
-
-            if "RS" in to_filter and not posts_done:
-                n = filter_posts_strict(
-                    to_filter["RS"], posts_out,
-                    f"POSTS-{month}", MIN_POSTS_MATCH,
-                )
-                if n is not None and n >= MIN_POSTS_MATCH:
-                    posts_ok = True
-                    strict_marker(month).touch()      # FIX #1
-                    print(f"  ✅ Đánh dấu {strict_marker(month).name}")
-
-            if "RC" in to_filter and not comments_done:
-                n = filter_comments_python(
-                    to_filter["RC"], comments_out,
-                    f"COMMENTS-{month}", MIN_COMMENTS_MATCH,
-                )
-                if n is not None and n >= MIN_COMMENTS_MATCH:
-                    comments_ok = True
-
-            # Xoá raw chỉ cho kind đã thành công
-            if posts_ok and not posts_done:
-                delete_zst_safe(month, "RS")
-            if comments_ok and not comments_done:
-                delete_zst_safe(month, "RC")
-
-            if not (posts_ok and comments_ok):
-                print(f"\n  🛑 Chưa hoàn tất — giữ raw cho lần sau.")
-                if not posts_ok:
-                    print(f"     - posts chưa xong")
-                if not comments_ok:
-                    print(f"     - comments chưa xong")
-
-        except KeyboardInterrupt:
-            print(f"\n⚠️  Ctrl+C — thoát an toàn.")
-            return
-        except Exception as e:
-            print(f"  ❌ Lỗi {month}: {type(e).__name__}: {e}")
-            continue
+            kept = filter_dump(raw, output, f"{kind.upper()}-{month}", minimum)
+            assert kept is not None and kept >= minimum, f"Filter {raw.name} chưa hoàn tất"
+            if code == "RS":
+                marker.touch()
+            delete_zst_safe(month, code)
 
     # Tổng kết
-    print(f"\n{'=' * 60}\n✅ HOÀN TẤT\n{'=' * 60}")
-    for f in sorted(FILTERED_DIR.glob("*.jsonl")):
-        n = count_lines(f)
-        print(f"  {f.name}  {f.stat().st_size/1024/1024:.2f} MB ({n:,} dòng)")
+    print(f"\n{'=' * 60}\n✅ HOÀN TẤT {len(months)} tháng\n{'=' * 60}")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    parser.add_argument("--start-month", choices=MONTHS, default=MONTHS[0])
+    parser.add_argument("--end-month", choices=MONTHS, default=MONTHS[-1])
+    args = parser.parse_args()
+    if args.start_month > args.end_month:
+        parser.error("--start-month phải đứng trước hoặc bằng --end-month")
+    main(tuple(month for month in MONTHS if args.start_month <= month <= args.end_month))
