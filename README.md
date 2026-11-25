@@ -2,7 +2,7 @@
 
 Dataset này dùng để huấn luyện và đánh giá mô hình phân loại **tài khoản Reddit** thành **Bot (0)** hoặc **User (1)**. Mỗi mẫu gồm một tài khoản, lịch sử bài đăng và bình luận của tài khoản đó trong các subreddit được chọn, cùng một nhãn. Dữ liệu hoạt động đến từ 15 subreddit về tin tức và chính trị, như r/politics, r/news và r/worldnews.
 
-**Tiến độ dữ liệu.** Đợt rà soát tháng 06–08/2026 ghi nhận 94.272 bài đăng, 5.668.129 bình luận và tìm được 142 ứng viên Bot, 236 ứng viên User. Bước tải và xử lý đã được kiểm tra thêm với tháng 09/2025. Bản **09/2025–08/2026** đang được chuẩn bị. Số lượng cuối cùng sẽ có trong báo cáo export.
+**Bản dataset mới nhất** bao phủ **09/2025–08/2026** và có **2.078 tài khoản**, gồm **1.374 Bot** và **704 User**. Hai file dữ liệu cùng báo cáo nằm trong thư mục [`dataset/`](dataset/).
 
 ## Hai file dataset
 
@@ -11,7 +11,7 @@ Dataset này dùng để huấn luyện và đánh giá mô hình phân loại *
 
 Đọc nhãn từ `Users.csv`, rồi dùng `user_id` (tên tài khoản Reddit viết thường) để tìm lịch sử của cùng tài khoản trong JSON. Hai file dựa trên định dạng BotSim-24, với cột `label` ghi rõ nhãn trên từng dòng. [Định dạng tham chiếu BotSim-24](https://github.com/QQQQQQBY/BotSim/tree/main/BotSim-24-Dataset)
 
-GitHub lưu mã nguồn. Để sử dụng dữ liệu, lấy hai file từ bản bàn giao của nhóm hoặc tự tạo. [Cách tạo lại dataset](#tạo-lại-dataset)
+Tải cả hai file để đọc dataset. Báo cáo đi kèm ghi số tài khoản theo nhãn và split. [Users.csv](dataset/Users.csv) · [user_post_comment.json](dataset/user_post_comment.json) · [report.json](dataset/report.json)
 
 Ví dụ dưới đây minh họa tài khoản `user_demo` có nhãn User, với một bài đăng và ba bình luận.
 
@@ -97,7 +97,7 @@ $env:PYTHONIOENCODING = "utf-8"
    python -m scripts.gold.export_verified_year --end-month 2026-08
    ```
 
-Sau khi export thành công, lấy `Users.csv` và `user_post_comment.json` trong `exports/dataset_verified_2025-09_2026-08_v1/`. Báo cáo nằm tại `exports/dataset_verified_2025-09_2026-08_v1_evidence/report.json`. Dùng `--destination` với đường dẫn mới khi tạo version tiếp theo.
+Sau khi export thành công, lấy `Users.csv` và `user_post_comment.json` trong `exports/dataset_verified_2025-09_2026-08_v1/`. Báo cáo nằm tại `exports/dataset_verified_2025-09_2026-08_v1_evidence/report.json`. Dùng `--destination` với đường dẫn mới khi tạo version tiếp theo. Thư mục [`dataset/`](dataset/) chứa bản đã kiểm tra dành cho người sử dụng.
 
 ## Mã nguồn
 

@@ -1,0 +1,63 @@
+{
+  "months": [
+    "2025-09",
+    "2025-10",
+    "2025-11",
+    "2025-12",
+    "2026-01",
+    "2026-02",
+    "2026-03",
+    "2026-04",
+    "2026-05",
+    "2026-06",
+    "2026-07",
+    "2026-08"
+  ],
+  "min_events": 4,
+  "salt_split": "split_v1",
+  "salt_flag": "flag_v1",
+  "labels": {
+    "0": "BotBouncer A banned, không organic/service, đủ events trước flagged_at",
+    "1": "Verified author flair, đủ events trong 15 subs, không có trong bot_users"
+  },
+  "limit": "Nhãn theo nguồn. Verified flair xác minh thông tin của chủ account, không xác minh từng bài do người viết. BotBouncer B là proxy eval.",
+  "verified_by_source": {
+    "AskDocs": 168,
+    "science": 318,
+    "selfie": 21,
+    "ProtectAndServe": 108,
+    "AskLE": 27,
+    "Ask_Lawyers": 65,
+    "AskALawyer": 0,
+    "Lawyertalk": 12,
+    "AskVet": 5,
+    "FamilyMedicine": 7,
+    "medical_advice": 17,
+    "chess": 3,
+    "indiehackers": 0,
+    "web3": 0,
+    "BlockchainStartups": 0,
+    "artcommissions": 0,
+    "hireanartist": 0,
+    "JustMyFace": 3
+  },
+  "verified_with_flag_excluded": 7,
+  "verified_with_positive_flag_excluded": 3,
+  "botbouncer_b_usable_eval_only": 1405,
+  "counts_by_label": {
+    "Bot": 1374,
+    "User": 704
+  },
+  "counts_by_split": {
+    "Bot": {
+      "train": 982,
+      "val": 200,
+      "test": 192
+    },
+    "User": {
+      "train": 520,
+      "val": 88,
+      "test": 96
+    }
+  }
+}

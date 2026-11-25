@@ -36,6 +36,7 @@ def month_bounds(months):
 
 
 BOUNDS = month_bounds(MONTHS)
+MIN_SEARCH_WINDOW_SECONDS = 3600
 SUBREDDITS = {
     'worldnews', 'politics', 'news', 'geopolitics', 'ukraine', 'ukrainianconflict',
     'israelpalestine', 'internationalnews', 'globaltalk', 'upliftingnews', 'europe',
@@ -85,7 +86,9 @@ class Archive:
                 time.sleep(2 ** attempt)
                 continue
             if response.status_code == 422:
-                raise QueryTimeout(f'{endpoint}: {response.text[:200]}')
+                message = response.text[:200]
+                if 'timeout' in message.casefold() or 'timed out' in message.casefold():
+                    raise QueryTimeout(f'{endpoint}: {message}')
             if response.status_code == 429:
                 headers = response.headers
                 delay = headers.get('Retry-After') or headers.get('X-RateLimit-Reset') or '30'
@@ -108,14 +111,19 @@ def find_authors(api, source, kind, query, start, end):
     try:
         rows = api.get(f'{kind}/search/aggregate', params)
     except QueryTimeout:
-        if end - start <= 86400:
-            rows = api.get(f'{kind}/search/aggregate', params)
-        else:
+        if end - start > 86400:
             mid = (start + end) // 2
             return (find_authors(api, source, kind, query, start, mid)
                     | find_authors(api, source, kind, query, mid, end))
-    assert all(int(row['count']) > 0 for row in rows)
-    return {row['key'].casefold() for row in rows if row.get('key')} - set(SKIP_AUTHORS)
+        records = search_rows(
+            api, source, kind, start, end, author_flair_text=query,
+            fields='id,subreddit,author,created_utc',
+        )
+        names = (record.get('author') for record in records)
+    else:
+        assert all(int(row['count']) > 0 for row in rows)
+        names = (row.get('key') for row in rows)
+    return {name.casefold() for name in names if name} - set(SKIP_AUTHORS)
 
 
 def is_verified(source, row, *, until=BOUNDS[-1]):
@@ -133,32 +141,45 @@ def is_verified(source, row, *, until=BOUNDS[-1]):
 
 
 def search_rows(api, source, kind, start, end, **filters):
-    cursor = start - 1
     seen = set()
-    while cursor < end - 1:
-        params = {'subreddit': source, 'after': cursor,
-                  'before': end, 'sort': 'asc', 'limit': 100, **filters}
-        for attempt in range(4):
-            try:
-                rows = api.get(f'{kind}/search', params)
-                break
-            except QueryTimeout:
-                if attempt == 3:
-                    raise
-                time.sleep(attempt + 1)
-        times = [row['created_utc'] for row in rows]
-        assert times == sorted(times)
-        for row in rows:
-            assert row['subreddit'].casefold() == source.casefold()
-            assert cursor < row['created_utc'] < end
-            if row['id'] not in seen:
-                seen.add(row['id'])
-                yield row
-        if len(rows) < 100:
-            return
-        next_cursor = times[-1] - 1
-        assert next_cursor > cursor, 'Trang API có 100 records trong cùng một giây'
-        cursor = next_cursor
+
+    def read_window(start, end):
+        cursor = start - 1
+        while cursor < end - 1:
+            params = {'subreddit': source, 'after': cursor,
+                      'before': end, 'sort': 'asc', 'limit': 100, **filters}
+            for attempt in range(4):
+                try:
+                    rows = api.get(f'{kind}/search', params)
+                    break
+                except QueryTimeout as error:
+                    remaining_start = cursor + 1
+                    if attempt == 1 and end - remaining_start > MIN_SEARCH_WINDOW_SECONDS:
+                        # Giữ ranh giới phân trang để đọc hết các record cùng giây.
+                        mid = (remaining_start + end) // 2
+                        yield from read_window(remaining_start, mid)
+                        yield from read_window(mid, end)
+                        return
+                    if attempt == 3:
+                        left = datetime.fromtimestamp(remaining_start, tz=timezone.utc).isoformat()
+                        right = datetime.fromtimestamp(end, tz=timezone.utc).isoformat()
+                        raise QueryTimeout(f'r/{source} {kind}/search timeout từ {left} đến {right}') from error
+                    time.sleep(attempt + 1)
+            times = [row['created_utc'] for row in rows]
+            assert times == sorted(times)
+            for row in rows:
+                assert row['subreddit'].casefold() == source.casefold()
+                assert cursor < row['created_utc'] < end
+                if row['id'] not in seen:
+                    seen.add(row['id'])
+                    yield row
+            if len(rows) < 100:
+                return
+            next_cursor = times[-1] - 1
+            assert next_cursor > cursor, 'Trang API có 100 records trong cùng một giây'
+            cursor = next_cursor
+
+    yield from read_window(start, end)
 
 
 def flair_evidence(row):

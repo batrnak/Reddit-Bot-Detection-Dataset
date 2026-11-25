@@ -54,7 +54,7 @@ Build the strongest possible weakly labeled dataset for detecting bots on Reddit
 
 | Table | Key | Role | Status |
 |---|---|---|---|
-| `users` | user_id | Fixed node_idx, n_events, eligible (n_events >= 4), split train/val/test (70/15/15 by hash) | Rebuilt with MIN_EVENTS=4 |
+| `users` | user_id | Fixed node_idx, n_events, eligible (n_events >= 4), split train/val/test (70/15/15 by hash) | Rebuilt for 2025-09–2026-08: 1,475,061 users, 572,199 eligible |
 | `user_features` | user_id | 9 model features + `has_enough_data` + 4 `lf_*` columns (LF only) + `feature_cutoff_ts` | Rebuilt for 204,957 eligible users; 204,679 have enough data (`lf_coord_score` is 0) |
 | `eval_users` | user_id, eval_role | Evaluation set: `botbouncer_B` (half B, eval_label=1), `botsim_heldout` (humans and bots) | Rebuilt; B: 221 eligible, 160 usable; BotSim heldout: 873 |
 | `graph_edges` | src_idx, dst_idx | `coord_*` edges (label propagation) and `interact_*` edges (representation only), `weight_idf`, `first_ts`, `last_ts` | Not built |
@@ -108,7 +108,7 @@ Exporter dùng `scripts/gold/botsim.py` để loại BotSim held-out và `script
 
 ## 7. Work in progress
 
-- Luồng nhãn theo nguồn trong 12 tháng: `scripts.data_source.backfill_year` → `scripts.gold.build_users` → `scripts.gold.export_verified_year`. Cửa sổ mặc định 2025-09–2026-08. Chỉ rebuild `gold.users` và dùng lại split/identity hiện có. Nhãn Bot lấy BotBouncer half A với cutoff, nhãn User lấy verified author flair từ hai nhóm nguồn đã kiểm tra trong `exports/verified_user_probe_2026.py` và `exports/expand_verified_users_2026.py`. Loại account có bằng chứng xung đột và heldout. Half B chỉ đếm cho eval. Luồng này bỏ LF, weak labels và labeler. Kết quả xuất hai file ngoài Gold theo version. Test backfill tháng 2025-09 đã ghi đủ ba file Bronze và ba file Silver (51.075 posts, 2.316.086 comments, 36.032 dòng `bot_users`). Posts và comments normal đã kiểm tra đúng 15 subreddit và đúng tháng UTC. Chưa chạy đủ 12 tháng hay đo counts nhãn.
+- Luồng nhãn theo nguồn trong 12 tháng: `scripts.data_source.backfill_year` → `scripts.gold.build_users` → `scripts.gold.export_verified_year`. Cửa sổ mặc định 2025-09–2026-08. Chỉ rebuild `gold.users` và dùng lại split/identity hiện có. Nhãn Bot lấy BotBouncer half A với cutoff, nhãn User lấy verified author flair từ hai nhóm nguồn đã kiểm tra trong `exports/verified_user_probe_2026.py` và `exports/expand_verified_users_2026.py`. Loại account có bằng chứng xung đột và heldout. Half B chỉ đếm cho eval. Luồng này bỏ LF, weak labels và labeler. Kết quả xuất hai file ngoài Gold theo version. Test backfill tháng 2025-09 đã ghi đủ ba file Bronze và ba file Silver (51.075 posts, 2.316.086 comments, 36.032 dòng `bot_users`). Posts và comments normal đã kiểm tra đúng 15 subreddit và đúng tháng UTC. Log ngày 2026-11-25 xác nhận `gold.users` đã ghi 1.475.061 tài khoản và có 572.199 eligible. Export đã qua kiểm tra cửa sổ 12 tháng và ghi cache cho r/AskDocs, r/science và r/selfie (504 account khác nhau trước lọc cờ và held-out). Lần chạy tiếp theo dừng ở r/ProtectAndServe khi cả truy vấn aggregate và search của Arctic Shift timeout. Nhánh thu hẹp cửa sổ search đã pass với API giả lập. Chưa có counts nhãn của bộ 12 tháng.
 
 ### Kết quả thí nghiệm trước đây
 
