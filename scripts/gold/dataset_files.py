@@ -140,34 +140,36 @@ def _write_files(conn, selection, destination):
             if not first_user:
                 jsonfile.write(",\n")
             first_user = False
-            jsonfile.write(json.dumps(uid, ensure_ascii=False) + ":{")
+            jsonfile.write(f"    {json.dumps(uid, ensure_ascii=False)}: {{\n")
             for index, category in enumerate(ACTIVITY_GROUPS):
                 if index:
-                    jsonfile.write(",")
-                jsonfile.write(json.dumps(category) + ":[")
+                    jsonfile.write(",\n")
+                jsonfile.write(f'        "{category}": [')
                 first_event = True
                 for (event_json,) in cursor.execute(
                         "SELECT event_json FROM events WHERE user_id=? AND category=? ORDER BY ts,item_id", (uid, category)):
+                    event = json.loads(event_json)
                     if category != "posts":
-                        event = json.loads(event_json)
                         depth = depths[event["comment_id"]]
                         event["level"] = float(depth) if depth is not None else None
                         if category == "comment_2":
                             event["levels"] = event["level"]
-                        event_json = json.dumps(event, ensure_ascii=False, allow_nan=False)
                     if not first_event:
                         jsonfile.write(",")
                     first_event = False
-                    jsonfile.write(event_json)
+                    record = json.dumps(event, ensure_ascii=False, allow_nan=False, indent=4)
+                    jsonfile.write("\n            " + record.replace("\n", "\n            "))
+                if not first_event:
+                    jsonfile.write("\n        ")
                 jsonfile.write("]")
-            jsonfile.write("}")
-        jsonfile.write("\n}\n")
+            jsonfile.write("\n    }")
+        jsonfile.write("}\n" if first_user else "\n}\n")
 
 
 def _validate_files(selection, destination):
     """Đọc lại từng user, chặn JSON/CSV hỏng trước khi công bố."""
     expected = selection.select("user_id", "label").sort(["label", "user_id"], descending=[True, False])
-    max_line_bytes = 64 * 1024 * 1024
+    max_account_bytes = 64 * 1024 * 1024
     with (destination / "Users.csv").open("r", newline="", encoding="utf-8") as csvfile, \
             (destination / "user_post_comment.json").open("rb") as jsonfile:
         reader = csv.DictReader(csvfile)
@@ -176,14 +178,18 @@ def _validate_files(selection, destination):
         for i, item in enumerate(expected.iter_rows(named=True)):
             row = next(reader, None)
             assert row is not None and row["user_id"] == row["name"] == item["user_id"], "CSV sai identity hoặc thứ tự nhãn"
-            line = jsonfile.readline(max_line_bytes + 1)
-            assert len(line) <= max_line_bytes and line.endswith(b"\n"), "JSON một user quá lớn hoặc thiếu newline"
-            payload = line[:-1]
-            if i < expected.height - 1:
-                assert payload.endswith(b","), "JSON thiếu dấu phân cách"
-                payload = payload[:-1]
-            else:
-                assert not payload.endswith(b","), "JSON dư dấu phân cách"
+            payload = bytearray()
+            while True:
+                remaining = max_account_bytes - len(payload)
+                line = jsonfile.readline(remaining + 1)
+                assert len(line) <= remaining and line.endswith(b"\n"), "JSON một user quá lớn hoặc thiếu newline"
+                payload.extend(line)
+                if line in (b"    },\n", b"    }\n"):
+                    break
+            has_comma = line == b"    },\n"
+            assert has_comma == (i < expected.height - 1), "JSON sai dấu phân cách giữa các user"
+            if has_comma:
+                del payload[-2]
             single = json.loads(b"{" + payload + b"}")
             assert list(single) == [item["user_id"]], "JSON sai key"
             events = single[item["user_id"]]
