@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import polars as pl
@@ -18,11 +19,17 @@ POST_COLUMNS = ["submission_id", "author_name", "title", "selftext", "score",
                 "num_comments", "upvote_ratio", "created_utc", "subreddit"]
 COMMENT_COLUMNS = ["comment_id", "author_name", "body", "score", "link_id",
                    "parent_id", "created_utc", "subreddit"]
+CSV_FIELDS = ["user_id", "name", "description", "submission_num", "comment_num",
+              "character_setting", "comment_num_1", "comment_num_2", "subreddit"]
+ACTIVITY_GROUPS = ("posts", "comment_1", "comment_2")
+TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+FORMAT_NOTE = ("Users.csv xếp User trước Bot. Đọc counts_by_label.User trong report.json để xác định nhãn. "
+               "comment_2 chứa reply ở nhiều độ sâu. level và levels là null khi thiếu chuỗi parent.")
 
 
 def _timestamp(value):
     assert value is not None and value.tzinfo is not None, "Timestamp thiếu hoặc không có timezone"
-    return value.strftime("%Y-%m-%d %H:%M:%S.%f")
+    return value.astimezone(timezone.utc).strftime(TIMESTAMP_FORMAT)
 
 
 def _stage_events(conn, selection):
@@ -47,7 +54,8 @@ def _stage_events(conn, selection):
                     rows = []
                     for row in df.iter_rows(named=True):
                         uid = row["user_id"]
-                        ts = _timestamp(row["created_utc"])
+                        timestamp = row["created_utc"]
+                        ts = _timestamp(timestamp)
                         sub = row["subreddit"]
                         assert isinstance(sub, str) and sub, "Activity thiếu subreddit"
                         if kind == "posts":
@@ -67,9 +75,11 @@ def _stage_events(conn, selection):
                             item = {"comment_id": item_id, "comment_author_name": uid,
                                     "comment_score": row["score"], "comment_body": row["body"],
                                     "link_id": row["link_id"], "parent_id": parent, "subreddit": sub,
-                                    "created_utc": ts, "level": 1 if category == "comment_1" else None}
+                                    "created_utc": ts}
                         count[category] += 1
-                        rows.append((uid, category, ts, item_id, sub, json.dumps(item, ensure_ascii=False, allow_nan=False)))
+                        # Giữ độ chính xác khi sắp xếp, chỉ định dạng giây trong JSON bàn giao.
+                        sort_ts = timestamp.astimezone(timezone.utc).isoformat(timespec="microseconds")
+                        rows.append((uid, category, sort_ts, item_id, sub, json.dumps(item, ensure_ascii=False, allow_nan=False)))
                     if rows:
                         conn.executemany("INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)", rows)
                 conn.commit()
@@ -79,17 +89,44 @@ def _stage_events(conn, selection):
     return count
 
 
+def _comment_depths(conn):
+    parents = {}
+    for item_id, event_json in conn.execute("SELECT item_id, event_json FROM events WHERE category != 'posts'"):
+        assert item_id not in parents, f"Trùng comment_id: {item_id}"
+        parents[item_id] = json.loads(event_json)["parent_id"]
+
+    depths = {}
+    for item_id in parents:
+        chain = []
+        current = item_id
+        while current in parents and current not in depths:
+            chain.append(current)
+            depths[current] = None
+            parent_id = parents[current]
+            if parent_id.startswith("t3_"):
+                depth = 0
+                break
+            assert parent_id.startswith("t1_"), f"Parent không hợp lệ: {parent_id}"
+            current = parent_id[3:]
+        else:
+            depth = depths.get(current)
+        for comment_id in reversed(chain):
+            if depth is not None:
+                depth += 1
+                depths[comment_id] = depth
+    return depths
+
+
 def _write_files(conn, selection, destination):
     cursor = conn.cursor()
+    depths = _comment_depths(conn)
     with (destination / "Users.csv").open("w", newline="", encoding="utf-8") as csvfile, \
             (destination / "user_post_comment.json").open("w", encoding="utf-8", newline="\n") as jsonfile:
-        fields = ["user_id", "name", "description", "submission_num", "comment_num",
-                  "character_setting", "comment_num_1", "comment_num_2", "subreddit", "label"]
-        writer = csv.DictWriter(csvfile, fieldnames=fields)
+        writer = csv.DictWriter(csvfile, fieldnames=CSV_FIELDS)
         writer.writeheader()
         jsonfile.write("{\n")
         first_user = True
-        # BotSim gốc xếp human trước bot; label vẫn được ghi tường minh.
+        # BotSim gốc xếp human trước bot. report.json lưu số dòng từng lớp.
         for row in selection.sort(["label", "user_id"], descending=[True, False]).iter_rows(named=True):
             uid = row["user_id"]
             counts = dict(cursor.execute("SELECT category, count(*) FROM events WHERE user_id=? GROUP BY category", (uid,)))
@@ -97,20 +134,27 @@ def _write_files(conn, selection, destination):
             n1, n2 = counts.get("comment_1", 0), counts.get("comment_2", 0)
             assert n_posts + n1 + n2 >= MIN_EVENTS, f"{uid}: số activity sau cutoff không đủ"
             subs = [r[0] for r in cursor.execute("SELECT DISTINCT subreddit FROM events WHERE user_id=? ORDER BY subreddit", (uid,))]
-            writer.writerow({"user_id": uid, "name": uid, "description": "", "submission_num": n_posts,
-                             "comment_num": n1+n2, "character_setting": "", "comment_num_1": n1,
-                             "comment_num_2": n2, "subreddit": repr(subs), "label": int(row["label"])})
+            writer.writerow({"user_id": uid, "name": uid, "description": "", "submission_num": f"{n_posts}.0",
+                             "comment_num": f"{n1 + n2}.0", "character_setting": "", "comment_num_1": f"{n1}.0",
+                             "comment_num_2": f"{n2}.0", "subreddit": repr(subs)})
             if not first_user:
                 jsonfile.write(",\n")
             first_user = False
             jsonfile.write(json.dumps(uid, ensure_ascii=False) + ":{")
-            for index, category in enumerate(("posts", "comment_1", "comment_2")):
+            for index, category in enumerate(ACTIVITY_GROUPS):
                 if index:
                     jsonfile.write(",")
                 jsonfile.write(json.dumps(category) + ":[")
                 first_event = True
                 for (event_json,) in cursor.execute(
                         "SELECT event_json FROM events WHERE user_id=? AND category=? ORDER BY ts,item_id", (uid, category)):
+                    if category != "posts":
+                        event = json.loads(event_json)
+                        depth = depths[event["comment_id"]]
+                        event["level"] = float(depth) if depth is not None else None
+                        if category == "comment_2":
+                            event["levels"] = event["level"]
+                        event_json = json.dumps(event, ensure_ascii=False, allow_nan=False)
                     if not first_event:
                         jsonfile.write(",")
                     first_event = False
@@ -127,13 +171,11 @@ def _validate_files(selection, destination):
     with (destination / "Users.csv").open("r", newline="", encoding="utf-8") as csvfile, \
             (destination / "user_post_comment.json").open("rb") as jsonfile:
         reader = csv.DictReader(csvfile)
-        assert reader.fieldnames == ["user_id", "name", "description", "submission_num", "comment_num",
-                                    "character_setting", "comment_num_1", "comment_num_2", "subreddit", "label"]
+        assert reader.fieldnames == CSV_FIELDS, "CSV sai schema BotSim"
         assert jsonfile.readline() == b"{\n", "JSON thiếu mở object"
         for i, item in enumerate(expected.iter_rows(named=True)):
             row = next(reader, None)
-            assert row is not None and row["user_id"] == row["name"] == item["user_id"], "CSV sai identity"
-            assert row["label"] == str(item["label"]), "CSV sai label"
+            assert row is not None and row["user_id"] == row["name"] == item["user_id"], "CSV sai identity hoặc thứ tự nhãn"
             line = jsonfile.readline(max_line_bytes + 1)
             assert len(line) <= max_line_bytes and line.endswith(b"\n"), "JSON một user quá lớn hoặc thiếu newline"
             payload = line[:-1]
@@ -145,11 +187,20 @@ def _validate_files(selection, destination):
             single = json.loads(b"{" + payload + b"}")
             assert list(single) == [item["user_id"]], "JSON sai key"
             events = single[item["user_id"]]
-            assert list(events) == ["posts", "comment_1", "comment_2"], "JSON sai danh sách activity"
-            assert len(events["posts"]) == int(row["submission_num"])
-            assert len(events["comment_1"]) == int(row["comment_num_1"])
-            assert len(events["comment_2"]) == int(row["comment_num_2"])
-            assert int(row["comment_num"]) == len(events["comment_1"]) + len(events["comment_2"])
+            assert tuple(events) == ACTIVITY_GROUPS, "JSON sai danh sách activity"
+            assert row["submission_num"] == f"{len(events['posts'])}.0"
+            assert row["comment_num_1"] == f"{len(events['comment_1'])}.0"
+            assert row["comment_num_2"] == f"{len(events['comment_2'])}.0"
+            assert row["comment_num"] == f"{len(events['comment_1']) + len(events['comment_2'])}.0"
+            for category, records in events.items():
+                for record in records:
+                    timestamp = datetime.fromisoformat(record["created_utc"])
+                    assert timestamp.strftime(TIMESTAMP_FORMAT) == record["created_utc"], "Timestamp sai format BotSim"
+                    if category == "comment_1":
+                        assert isinstance(record["level"], float) and record["level"] == 1.0
+                    if category == "comment_2":
+                        depth = record["level"]
+                        assert record["levels"] == depth and (depth is None or isinstance(depth, float) and depth >= 2.0)
         assert next(reader, None) is None, "CSV dư rows"
         assert jsonfile.readline() == b"}\n" and jsonfile.read(1) == b"", "JSON thiếu đóng hoặc dư dữ liệu"
 

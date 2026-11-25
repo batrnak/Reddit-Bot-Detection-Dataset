@@ -20,7 +20,7 @@ from scripts.gold.common import (
     MIN_EVENTS, SALT_FLAG, SALT_SPLIT, eval_exclusion_users, flags_half_a, flags_half_b,
     positive_flags, read_flags,
 )
-from scripts.gold.dataset_files import _publish_staged, _stage_events, _validate_files, _write_files
+from scripts.gold.dataset_files import FORMAT_NOTE, _publish_staged, _stage_events, _validate_files, _write_files
 
 
 def _verified_flairs(activity, months, out):
@@ -122,7 +122,7 @@ def export_year(end_month, destination):
             "labels": {"0": "BotBouncer A banned, không organic/service, đủ events trước flagged_at",
                        "1": "Verified author flair, đủ events trong 15 subs, không có trong bot_users"},
             "limit": "Nhãn theo nguồn. Verified flair xác minh thông tin của chủ account, "
-                     "không xác minh từng bài do người viết. BotBouncer B là proxy eval.",
+                     f"không xác minh từng bài do người viết. BotBouncer B là proxy eval. {FORMAT_NOTE}",
             "verified_by_source": source_counts,
             "verified_with_flag_excluded": len(user_hits & flagged),
             "verified_with_positive_flag_excluded": len(user_hits & set(bot_flags["user_id"])),
@@ -147,7 +147,7 @@ def main():
     parser.add_argument("--destination", type=Path)
     args = parser.parse_args()
     months = year_months(args.end_month)
-    destination = args.destination or Path(f"exports/dataset_verified_{months[0]}_{months[-1]}_v1")
+    destination = args.destination or Path(f"exports/dataset_verified_{months[0]}_{months[-1]}_v2")
     export_year(args.end_month, destination)
 
 

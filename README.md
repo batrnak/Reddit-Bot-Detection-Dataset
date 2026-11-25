@@ -6,18 +6,18 @@ Dataset này dùng để huấn luyện và đánh giá mô hình phân loại *
 
 ## Hai file dataset
 
-- **`Users.csv`** có một dòng cho mỗi tài khoản, gồm nhãn `0` hoặc `1` trong cột `label`, số bài đăng, số bình luận và danh sách subreddit.
-- **`user_post_comment.json`** lưu lịch sử hoạt động theo `user_id`. Mỗi tài khoản có `posts` (bài đăng), `comment_1` (bình luận trả lời bài đăng) và `comment_2` (bình luận trả lời một bình luận khác, có thể ở nhiều độ sâu).
+- **`Users.csv`** có một dòng cho mỗi tài khoản và đúng chín cột theo BotSim-24, gồm thông tin tài khoản, số bài đăng, số bình luận và danh sách subreddit.
+- **`user_post_comment.json`** lưu lịch sử theo `user_id`. Mỗi tài khoản có `posts` (bài đăng), `comment_1` (bình luận trả lời bài đăng) và `comment_2` (reply cho bình luận). `comment_2` có `level` và `levels`. Cả hai là `null` khi thiếu chuỗi parent để xác định độ sâu.
 
-Đọc nhãn từ `Users.csv`, rồi dùng `user_id` (tên tài khoản Reddit viết thường) để tìm lịch sử của cùng tài khoản trong JSON. Hai file dựa trên định dạng BotSim-24, với cột `label` ghi rõ nhãn trên từng dòng. [Định dạng tham chiếu BotSim-24](https://github.com/QQQQQQBY/BotSim/tree/main/BotSim-24-Dataset)
+Đọc `counts_by_label.User` trong `report.json` trước khi sắp xếp CSV. Với bản hiện tại, **704 dòng dữ liệu đầu là User (1)** và **1.374 dòng tiếp theo là Bot (0)**. Dùng `user_id` (username Reddit viết thường) để nối hồ sơ CSV với lịch sử JSON. Timestamp trong JSON dùng UTC và ghi đến giây. [Định dạng tham chiếu BotSim-24](https://github.com/QQQQQQBY/BotSim/tree/main/BotSim-24-Dataset)
 
 Tải cả hai file để đọc dataset. Báo cáo đi kèm ghi số tài khoản theo nhãn và split. [Users.csv](dataset/Users.csv) · [user_post_comment.json](dataset/user_post_comment.json) · [report.json](dataset/report.json)
 
 Ví dụ dưới đây minh họa tài khoản `user_demo` có nhãn User, với một bài đăng và ba bình luận.
 
 ```csv
-user_id,name,description,submission_num,comment_num,character_setting,comment_num_1,comment_num_2,subreddit,label
-user_demo,user_demo,,1,3,,2,1,['politics'],1
+user_id,name,description,submission_num,comment_num,character_setting,comment_num_1,comment_num_2,subreddit
+user_demo,user_demo,,1.0,3.0,,2.0,1.0,['politics']
 ```
 
 Trong `user_post_comment.json`, lịch sử của cùng tài khoản có dạng rút gọn như sau.
@@ -27,11 +27,11 @@ Trong `user_post_comment.json`, lịch sử của cùng tài khoản có dạng 
   "user_demo": {
     "posts": [{"submission_id": "p01", "posts": "Nội dung bài đăng", "subreddit": "politics"}],
     "comment_1": [
-      {"comment_id": "c01", "parent_id": "t3_p01", "comment_body": "Bình luận thứ nhất"},
-      {"comment_id": "c02", "parent_id": "t3_p01", "comment_body": "Bình luận thứ hai"}
+      {"comment_id": "c01", "parent_id": "t3_p01", "comment_body": "Bình luận thứ nhất", "level": 1.0},
+      {"comment_id": "c02", "parent_id": "t3_p01", "comment_body": "Bình luận thứ hai", "level": 1.0}
     ],
     "comment_2": [
-      {"comment_id": "c03", "parent_id": "t1_c01", "comment_body": "Trả lời c01", "level": null}
+      {"comment_id": "c03", "parent_id": "t1_c01", "comment_body": "Trả lời c01", "level": 2.0, "levels": 2.0}
     ]
   }
 }
@@ -97,7 +97,7 @@ $env:PYTHONIOENCODING = "utf-8"
    python -m scripts.gold.export_verified_year --end-month 2026-08
    ```
 
-Sau khi export thành công, lấy `Users.csv` và `user_post_comment.json` trong `exports/dataset_verified_2025-09_2026-08_v1/`. Báo cáo nằm tại `exports/dataset_verified_2025-09_2026-08_v1_evidence/report.json`. Dùng `--destination` với đường dẫn mới khi tạo version tiếp theo. Thư mục [`dataset/`](dataset/) chứa bản đã kiểm tra dành cho người sử dụng.
+Lần export mới mặc định ghi hai file vào `exports/dataset_verified_2025-09_2026-08_v2/`, với báo cáo tại `exports/dataset_verified_2025-09_2026-08_v2_evidence/report.json`. Dùng `--destination` để chọn một version khác. Thư mục [`dataset/`](dataset/) chứa dữ liệu v1 đã được chuyển sang format bàn giao hiện tại.
 
 ## Mã nguồn
 

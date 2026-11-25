@@ -20,7 +20,7 @@
     "0": "BotBouncer A banned, không organic/service, đủ events trước flagged_at",
     "1": "Verified author flair, đủ events trong 15 subs, không có trong bot_users"
   },
-  "limit": "Nhãn theo nguồn. Verified flair xác minh thông tin của chủ account, không xác minh từng bài do người viết. BotBouncer B là proxy eval.",
+  "limit": "Nhãn theo nguồn. Verified flair xác minh thông tin của chủ account, không xác minh từng bài do người viết. BotBouncer B là proxy eval. Users.csv xếp User trước Bot. Đọc counts_by_label.User trong report.json để xác định nhãn. comment_2 chứa reply ở nhiều độ sâu. level và levels là null khi thiếu chuỗi parent.",
   "verified_by_source": {
     "AskDocs": 168,
     "science": 318,
